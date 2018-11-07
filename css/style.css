@@ -206,7 +206,7 @@ t {
     width: 60%;
     height: 100%;
     right: 0px;
-    background-image: url("/img/simplify-ui.png");
+    background-image: url("../img/simplify-ui.png");
     background-repeat: no-repeat;
     background-position: top;
     background-size: cover;
@@ -252,7 +252,7 @@ t {
     display: block;
     width: 100%;
     height: 100%;
-    background-image: url("/img/code.png");
+    background-image: url("../img/code.png");
     background-repeat: no-repeat;
     background-position: center;
     background-size: cover;
