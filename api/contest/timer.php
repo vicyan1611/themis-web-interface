@@ -2,26 +2,28 @@
     //? |-----------------------------------------------------------------------------------------------|
     //? |  /api/contest/timer.php                                                                       |
     //? |                                                                                               |
-    //? |  Copyright (c) 2018-2020 Belikhun. All right reserved                                         |
+    //? |  Copyright (c) 2018-2021 Belikhun. All right reserved                                         |
     //? |  Licensed under the MIT License. See LICENSE in the project root for license information.     |
     //? |-----------------------------------------------------------------------------------------------|
 
 	// SET PAGE TYPE
 	define("PAGE_TYPE", "API");
 	
-    require_once $_SERVER["DOCUMENT_ROOT"] ."/lib/ratelimit.php";
-    require_once $_SERVER["DOCUMENT_ROOT"] ."/lib/belibrary.php";
-	require_once $_SERVER["DOCUMENT_ROOT"] ."/data/config.php";
+    require_once $_SERVER["DOCUMENT_ROOT"] ."/libs/ratelimit.php";
+    require_once $_SERVER["DOCUMENT_ROOT"] ."/libs/belibrary.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/modules/config.php";
 
-	if ($config["time"]["during"] <= 0)
-		stop(101, "Not in Contest mode.", 200, Array(
-			"during" => $config["time"]["during"],
+	$beginTime = getConfig("time.contest.begin");
+	$duringTime = getConfig("time.contest.during");
+	$offsetTime = getConfig("time.contest.offset");
+
+	if ($duringTime <= 0)
+		stop(101, "Not in Contest mode", 200, Array(
+			"during" => $duringTime * 60,
 			"phase" => 0
 		));
 
-	$beginTime = $config["time"]["begin"]["times"];
-	$duringTime = $config["time"]["during"] * 60;
-	$offsetTime = $config["time"]["offset"];
+	$duringTime *= 60;
 	$t = $beginTime - microtime(true) + $duringTime;
 
 	if ($t > $duringTime) {
@@ -37,7 +39,6 @@
 		$phase = 4;
 	}
 
-
 	stop(0, "Thành công!", 200, Array(
 		"phase" => $phase,
 		"start" => $beginTime,
@@ -45,4 +46,3 @@
 		"time" => $t,
 		"offset" => $offsetTime
 	));
-?>

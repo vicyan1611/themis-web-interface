@@ -2,7 +2,7 @@
 	//? |-----------------------------------------------------------------------------------------------|
 	//? |  /api/contest/rank.php                                                                        |
 	//? |                                                                                               |
-	//? |  Copyright (c) 2018-2020 Belikhun. All right reserved                                         |
+	//? |  Copyright (c) 2018-2021 Belikhun. All right reserved                                         |
 	//? |  Licensed under the MIT License. See LICENSE in the project root for license information.     |
 	//? |-----------------------------------------------------------------------------------------------|
 
@@ -11,10 +11,11 @@
 	// SET PAGE TYPE
 	define("PAGE_TYPE", $export ? "NORMAL" : "API");
 
-	require_once $_SERVER["DOCUMENT_ROOT"] ."/lib/ratelimit.php";
-	require_once $_SERVER["DOCUMENT_ROOT"] ."/lib/belibrary.php";
-	require_once $_SERVER["DOCUMENT_ROOT"] ."/lib/cache.php";
-	require_once $_SERVER["DOCUMENT_ROOT"] ."/data/config.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/libs/ratelimit.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/libs/belibrary.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/libs/cache.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/modules/config.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/modules/contest.php";
 
 	if ($export && !isLoggedIn())
 		stop(11, "Bạn chưa đăng nhập!", 401);
@@ -22,13 +23,13 @@
 	if ($export && $_SESSION["id"] !== "admin")
 		stop(31, "Access Denied!", 403);
 
-	if ($config["publish"] !== true && $_SESSION["id"] !== "admin")
+	if (getConfig("contest.result.publish") !== true && $_SESSION["id"] !== "admin")
 		stop(108, "Thông tin không được công bố", 200, Array(
 			"list" => Array(),
 			"rank" => Array()
 		));
 
-	if ($config["viewRank"] !== true && $_SESSION["id"] !== "admin")
+	if (getConfig("contest.ranking.enabled") !== true && $_SESSION["id"] !== "admin")
 		stop(107, "Xếp hạng đã bị tắt", 200, Array(
 			"list" => Array(),
 			"rank" => Array()
@@ -41,75 +42,119 @@
 		));
 
 	if (!$export) {
-		$cache = new cache("api.contest.rank.". md5($_SESSION["username"] . $_SESSION["id"]));
-		$cache -> setAge($config["cache"]["contestRank"]);
+		$cacheName = ($_SESSION["id"] === "admin") ? "contestRank.admin" : "contestRank.user";
+
+		$cache = new Cache($cacheName);
+		$cache -> setAge(getConfig("cache.contestRank"));
 		
 		if ($cache -> validate()) {
 			$returnData = $cache -> getData();
-			stop(0, "Thành công!", 200, $returnData, $returnData["overall"]);
+			stop(0, "Thành công!", 200, $returnData, Array($returnData["spOverall"], $returnData["spRanking"], $returnData["overall"], count($returnData["rank"])));
 		}
 	}
 
-	require_once $_SERVER["DOCUMENT_ROOT"] ."/data/xmldb/account.php";
-	require_once $_SERVER["DOCUMENT_ROOT"] ."/lib/logParser.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/modules/account.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/modules/logParser.php";
+	require_once $_SERVER["DOCUMENT_ROOT"] ."/modules/submissions.php";
 
-	$logDir = glob($config["logDir"] ."/*.log");
+	updateSubmissions();
+
+	//? SUBMISSIONS CALCULATION
+	$usersList = getSubmissionsList();
+
+	if (getConfig("contest.ranking.showAllUsers"))
+		$usersList = array_merge($usersList, getAccountsList());
+
 	$res = Array();
 	$_list_ = Array();
 	$list = Array();
 	$nameList = Array();
 	$total = Array();
+	$sp = Array();
 	$overall = 0;
+	$spOverall = 0;
 
-	foreach ($logDir as $log) {
-		$data = ((new logParser($log, LOGPARSER_MODE_MINIMAL)) -> parse())["header"];
-		$filename = $data["file"]["logFilename"];
-		$user = $data["user"];
-		$userData = getUserData($user);
+	foreach ($usersList as $user) {
+		$sub = new Submissions($user);
+		$subList = $sub -> list();
 
-		if (problemDisabled($data["problem"]) && $config["viewRankHideDisabled"] && $_SESSION["id"] !== "admin")
+		$userData = (new Account($user)) -> getDetails();
+		$res[$user] = Array(
+			"username" => $user,
+			"name" => ($userData && isset($userData["name"]))
+				? $userData["name"]
+				: null,
+			"online" => ($userData && isset($userData["online"]))
+				? $userData["online"]
+				: false,
+			"total" => 0,
+			"sp" => 0,
+			"logFile" => Array(),
+			"status" => Array(),
+			"point" => Array(),
+			"lastSubmit" => null
+		);
+
+		if (count($subList) === 0 && !getConfig("contest.ranking.showAllUsers")) {
+			unset($res[$user]);
 			continue;
-
-		if ($config["viewRankTask"] === true || $_SESSION["id"] === "admin") {
-			$_list_[$data["problem"]] = null;
-			$res[$user]["status"][$data["problem"]] = $data["status"];
-			$res[$user]["point"][$data["problem"]] = $data["point"];
-			$res[$user]["logFile"][$data["problem"]] = ($config["viewLog"] === true || $_SESSION["id"] === "admin") ? $filename : null;
-
-			if ($data["problemName"])
-				$nameList[$data["problem"]] = $data["problemName"];
 		}
 
-		$res[$user]["username"] = $user;
-		$res[$user]["name"] = ($userData && isset($userData["name"])) ? $userData["name"] : null;
+		foreach ($sub -> list() as $id) {
+			$data = $sub -> getData($id);
 
-		if (!isset($res[$user]["lastSubmit"]) || $res[$user]["lastSubmit"] < $data["file"]["lastModify"])
-			$res[$user]["lastSubmit"] = $data["file"]["lastModify"];
+			if (!$data || !isset($data["header"]))
+				continue;
 
-		if (!isset($res[$user]["total"]))
-			$res[$user]["total"] = 0;
-			
-		$res[$user]["total"] += $data["point"];
+			$data = $data["header"];
+			$meta = $sub -> getMeta($id);
+	
+			if (problemDisabled($data["problem"]) && getConfig("contest.ranking.hideDisabled") && $_SESSION["id"] !== "admin")
+				continue;
+	
+			if (getConfig("contest.ranking.viewTask") === true || $_SESSION["id"] === "admin") {
+				$_list_[$data["problem"]] = null;
+				$res[$user]["status"][$data["problem"]] = $data["status"];
+				$res[$user]["point"][$data["problem"]] = $data["point"];
+
+				$res[$user]["logFile"][$data["problem"]] =
+					(getConfig("contest.log.enabled") === true || $_SESSION["id"] === "admin")
+						? $data["file"]["logFilename"]
+						: null;
+
+				if (isset($meta["sp"]))
+					$res[$user]["sps"][$data["problem"]] = $meta["sp"]["point"];
+
+				if (isset($data["problemName"]))
+					$nameList[$data["problem"]] = $data["problemName"];
+			}
+	
+			if (!isset($res[$user]["lastSubmit"]) || $res[$user]["lastSubmit"] < $data["file"]["lastModify"])
+				$res[$user]["lastSubmit"] = $data["file"]["lastModify"];
+				
+			$res[$user]["total"] += $data["point"];
+
+			if (isset($meta["sp"]))
+				$res[$user]["sp"] += $meta["sp"]["point"];
+		}
 	}
 
 	foreach ($_list_ as $key => $value)
 		array_push($list, $key);
 
-	// Sort data by lastSubmit
+	$spRanking = getConfig("contest.result.spRanking");
+
+	// Sort data
 	usort($res, function($a, $b) {
-		$a = $a["lastSubmit"];
-		$b = $b["lastSubmit"];
+		global $spRanking;
 
-		if ($a === $b)
-			return 0;
-
-		return ($a < $b) ? -1 : 1;
-	});
-
-	// Sort data by total point
-	usort($res, function($a, $b) {
-		$a = $a["total"];
-		$b = $b["total"];
+		if ($spRanking) {
+			$a = $a["sp"];
+			$b = $b["sp"];
+		} else {
+			$a = $a["total"];
+			$b = $b["total"];
+		}
 	
 		if ($a === $b)
 			return 0;
@@ -120,6 +165,12 @@
 	foreach ($res as $value) {
 		$total[$value["username"]] = $value["total"];
 		$overall += $total[$value["username"]];
+
+		if (isset($value["sp"])) {
+			$sp[$value["username"]] = $value["sp"];
+			$spOverall += $sp[$value["username"]];
+		} else
+			$sp[$value["username"]] = null;
 	}
 
 	if ($export) {
@@ -150,14 +201,17 @@
 
 		fclose($stream);
 	} else {
-		$returnData = Array (
+		$returnData = Array(
 			"list" => $list,
 			"nameList" => $nameList,
 			"total" => $total,
+			"sp" => $sp,
 			"rank" => $res,
-			"overall" => $overall
+			"overall" => $overall,
+			"spOverall" => $spOverall,
+			"spRanking" => $spRanking
 		);
 		
 		$cache -> save($returnData);
-		stop(0, "Thành công!", 200, $returnData, $returnData["overall"]);
+		stop(0, "Thành công!", 200, $returnData, Array($returnData["spOverall"], $returnData["spRanking"], $returnData["overall"], count($returnData["rank"])));
 	}
